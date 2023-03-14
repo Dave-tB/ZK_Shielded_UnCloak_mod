@@ -1,0 +1,541 @@
+function gadget:GetInfo()
+	return {
+		name    = "Shield Link",
+		desc    = "Nearby shields on the same ally team share charge to and from each other. Working Version",
+		author  = "lurker",
+		date    = "2009",
+		license = "Public domain",
+		layer   = 0,
+		enabled = true -- loaded by default?
+	}
+end
+local version = 1.232
+
+-- CHANGELOG
+--	2009-5-24: CarRepairer: Added graphic lines to show links of shields (also shows links of enemies' visible shields, can remove if desired).
+--	2009-5-30: CarRepairer: Lups graphic lines, fix for 0.79.1 compatibility.
+--	2009-9-15: Licho: added simple fast graph lines
+
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+
+
+if gadgetHandler:IsSyncedCode() then
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+--UNSYNCED
+else
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+
+local glVertex = gl.Vertexelse
+--------------------------------------------------------------------------------
+--  UNSYNCED
+--------------------------------------------------------------------------------
+
+--
+-- speed-ups
+--
+
+local GetUnitTeam         = Spring.GetUnitTeam
+local GetUnitRadius       = Spring.GetUnitRadius
+local GetUnitHeading      = Spring.GetUnitHeading
+local GetUnitViewPosition = Spring.GetUnitViewPosition
+
+local GetGameFrame        = Spring.GetGameFrame
+local GetFrameTimeOffset  = Spring.GetFrameTimeOffset
+
+local glPushMatrix = gl.PushMatrix
+local glPopMatrix  = gl.PopMatrix
+local glTranslate  = gl.Translate
+local glRotate     = gl.Rotate
+local glScale      = gl.Scale
+local glCallList    = gl.CallList
+
+
+--------------------------------------------------------------------------------
+
+local sphereDivs = 16
+local sphereArcs = 32
+
+local drawUnits = {}
+
+local sphereList = 0
+local negSphereList = 0
+
+local setupMatList  = 0
+local resetMatList  = 0
+local backMatList   = 0
+local frontMatList  = 0
+local atiFixMatList = 0
+
+local shieldList = 0
+
+local miniMapXformList = 0
+
+local trans = {0.1, 0.28, 0.60 }
+
+
+--------------------------------------------------------------------------------
+
+local function SphereVertex(x, y, z, neg)
+	if (neg) then
+		gl.Normal(-x, -y, -z)
+	else
+		gl.Normal(x, y, z)
+	end
+	gl.Vertex(x, y, z)
+end
+
+
+local function DrawSphere(divs, arcs, neg)
+	local cos = math.cos
+	local sin = math.sin
+	local twoPI = (2.0 * math.pi)
+	local divRads = math.pi / divs
+	local minRad = sin(divRads)
+
+	-- sides
+	for d = 4, (divs - 2) do
+		
+	if (d < 7) then
+		gl.Material({
+			ambient  = { 0, 0, 0 },
+			diffuse  = { 0, 0, 0, trans[d-3]},
+			emission = { 0.05, 0.10, 0.15 },
+			specular = { 0.25, 0.75, 1 },
+			shininess = 4
+		})
+	elseif (d > 10) then
+		gl.Material({
+			ambient  = { 0, 0, 0 },
+			diffuse  = { 0, 0, 0, trans[15-d]},
+			emission = { 0.05, 0.10, 0.15 },
+			specular = { 0.25, 0.75, 1 },
+			shininess = 4
+		})
+	else
+		gl.Material({
+			ambient  = { 0, 0, 0 },
+			diffuse  = { 0, 0, 0, 1.0 },
+			emission = { 0.05, 0.10, 0.15 },
+			specular = { 0.25, 0.75, 1.0 },
+			shininess = 4
+		})
+	end
+	
+	gl.BeginEnd(GL.QUAD_STRIP, function()
+			local topRads = divRads * (d + 0)
+			local botRads = divRads * (d + 1)
+			local top = cos(topRads)
+			local bot = cos(botRads)
+			local topRad = sin(topRads)
+			local botRad = sin(botRads)
+		
+			for i = 0, arcs do
+				local a = i * (2.0 * math.pi) / arcs
+				SphereVertex(sin(a) * topRad, top, cos(a) * topRad, neg)
+				SphereVertex(sin(a) * botRad, bot, cos(a) * botRad, neg)
+			end
+		end)
+	end
+	
+	-- bottom
+	gl.BeginEnd(GL.TRIANGLE_FAN, function()
+		SphereVertex(0, -1, 0, neg)
+		for i = 0, arcs do
+			local a = -i * (2.0 * math.pi) / arcs
+			SphereVertex(sin(a) * minRad, -cos(divRads), cos(a) * minRad, neg)
+		end
+	end)
+	gl.Material({
+	ambient  = { 0, 0, 0 },
+	diffuse  = { 0, 0, 0, 0.5 },
+	emission = { 0.05, 0.10, 0.15 },
+	specular = { 0.25, 0.75, 1.0 },
+	shininess = 4
+	})
+	-- lines
+	gl.LineWidth(2.0)
+	gl.BeginEnd(GL.LINES, function()
+		SphereVertex( 1,  0,  0); SphereVertex(-1,  0,  0)
+		SphereVertex(0,   1,  0); SphereVertex(0,  -1,  0)
+		SphereVertex(0,   0,  1); SphereVertex(0,   0, -1)
+	end)
+	gl.LineWidth(1.0)
+
+	-- points
+	-- FIXME ATIBUG gl.PointSize(10.0)
+	--[[gl.BeginEnd(GL.POINTS, function()
+		SphereVertex( 1,  0,  0)
+		SphereVertex(-1,  0,  0)
+		SphereVertex(0,   1,  0)
+		SphereVertex(0,  -1,  0)
+		SphereVertex(0,   0,  1)
+		SphereVertex(0,   0, -1)
+	end)--]]
+	-- FIXME ATIBUG gl.PointSize(1.0)
+end
+
+
+--------------------------------------------------------------------------------
+
+local function SetupMaterial()
+	gl.Color(0.1, 0.2, 0.3, 0.3)
+	gl.Blending(GL.SRC_ALPHA, GL.ONE)
+	gl.DepthTest(true)
+	gl.Lighting(true)
+	gl.ShadeModel(GL.FLAT)
+	gl.Fog(false)
+	gl.ClipPlane(1, 0, 1, 0, 0) -- invisible in water
+end
+
+
+local function ResetMaterial()
+	gl.ShadeModel(GL.SMOOTH)
+	gl.Lighting(false)
+	gl.DepthTest(false)
+	gl.Blending(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA)
+	gl.Fog(true)
+	gl.ClipPlane(1, false) -- invisible in water
+	gl.Color(1,1,1,1)
+end
+
+local function BackMaterial()
+	gl.Material({
+		ambient  = { 0, 0, 0 },
+		diffuse  = { 0, 0, 0, 0.5 },
+		emission = { 0.05, 0.10, 0.15 },
+		specular = { 0.25, 0.75, 1.0 },
+		shininess = 4
+	})
+end
+
+local function FrontMaterial()
+	gl.Material({
+		ambient  = { 0, 0, 0 },
+		diffuse  = { 0, 0, 0, 0.75 },
+		emission = { 0.05, 0.10, 0.15 },
+		specular = { 0.25, 0.75, 1.0 },
+		shininess = 4
+	})
+end
+
+local function AtiBugFixMaterial()
+	gl.Material({
+		ambient  = { 0, 0, 0 },
+		diffuse  = { 0, 0, 0, 0 },
+		emission = { 0, 0, 0 },
+		specular = { 0, 0, 0 },
+		shininess = 0
+	})
+end
+
+local function ShieldList()
+	gl.Culling(GL.FRONT)
+	gl.CallList(backMatList)
+	glCallList(negSphereList)
+
+	gl.Culling(GL.BACK)
+	gl.CallList(frontMatList)
+	glCallList(sphereList)
+
+	gl.Culling(false)
+end
+
+
+local function MiniMapXform()
+	local mapX = Game.mapX * 512
+	local mapY = Game.mapY * 512
+	-- this will probably be a common display
+	-- list for widgets that use DrawInMiniMap()
+	gl.LoadIdentity()
+	gl.Translate(0, 1, 0)
+	gl.Scale(1 / mapX, 1 / mapY, 1)
+	gl.Rotate(90, 1, 0, 0)
+end
+
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+
+--[[
+local function getAlpha()
+	local frame = GetGameFrame() + GetFrameTimeOffset()
+	local alpha = (math.abs((frame % 128) - 64) / 64)
+	if (alpha < 0.5) then alpha = 0.5 end
+	return alpha
+end
+]]--
+
+local function DrawShield(unitID, radius, degrees)
+	local x, y, z = GetUnitViewPosition(unitID, true)
+	if (x == nil) then
+		return
+	end
+	local ux, uy, uz
+	if Spring.GetUnitRulesParam(unitID, "cloaker_pos_x") then
+		ux, uy, uz = x, y, z
+		x = Spring.GetUnitRulesParam(unitID, "cloaker_pos_x")
+		y = Spring.GetUnitRulesParam(unitID, "cloaker_pos_y")
+		z = Spring.GetUnitRulesParam(unitID, "cloaker_pos_z")
+	end
+	
+	if (not Spring.IsSphereInView(x, y, z, math.abs(radius))) then
+		return
+	end
+	
+	glPushMatrix()
+
+	glTranslate(x, y, z)
+	glScale(radius, radius, radius)
+	glRotate(degrees, 0, 1, 0)
+
+	glCallList(shieldList)
+
+	glPopMatrix()
+	
+	if ux then
+		gl.Material({
+			ambient  = { 0, 0, 0 },
+			diffuse  = { 0, 0, 0, 0.5 },
+			emission = { 0.15, 0.20, 0.25 },
+			specular = { 0.25, 0.75, 1.0 },
+			shininess = 4
+		})
+		gl.LineWidth(2.0)
+		gl.BeginEnd(GL.LINES, function()
+			gl.Vertex(ux, uy, uz)
+			gl.Vertex(x, y, z)
+		end)
+	end
+end
+
+local GetSpectatingState  = Spring.GetSpectatingState
+local GetLocalAllyTeamID  = Spring.GetLocalAllyTeamID
+local IsUnitSelected      = Spring.IsUnitSelected
+local GetUnitAllyTeam     = Spring.GetUnitAllyTeam
+local DrawGroundCircle    = gl.DrawGroundCircle
+
+function gadget:DrawWorld()
+	if (not next(drawUnits)) then
+		return
+	end
+
+	local dt = GetFrameTimeOffset()
+	local frame = GetGameFrame() + GetFrameTimeOffset()
+	local degrees = frame % (360 * 2 * 3 * 5)
+	
+	local readAllyTeam = GetLocalAllyTeamID()
+	local _, fullView = GetSpectatingState()
+
+	glCallList(setupMatList)
+
+	for unitID, radius in pairs(drawUnits) do
+		if (fullView or (GetUnitAllyTeam(unitID) == readAllyTeam)) then
+			DrawShield(unitID, radius, degrees + unitID * 57)
+		end
+	end
+
+	glCallList(resetMatList)
+	gl.Material({
+		ambient  = { 0, 0, 0 },
+		diffuse  = { 0, 0, 0, 0 },
+		emission = { 0, 0, 0 },
+		specular = { 0, 0, 0 },
+		shininess = 0
+	})
+	--gl.CallList(atiFixMatList)
+end
+
+
+function gadget:DrawInMiniMap()
+	if (not next(drawUnits)) then
+		return
+	end
+
+	gl.PushMatrix()
+	glCallList(miniMapXformList)
+
+	local readAllyTeam = GetLocalAllyTeamID()
+	local _, fullView = GetSpectatingState()
+
+	for unitID, radius in pairs(drawUnits) do
+		if (IsUnitSelected(unitID)) then
+			local x, y, z = GetUnitViewPosition(unitID, true)
+			if (x ~= nil) then
+				if Spring.GetUnitRulesParam(unitID, "cloaker_pos_x") then
+					x = Spring.GetUnitRulesParam(unitID, "cloaker_pos_x")
+					y = Spring.GetUnitRulesParam(unitID, "cloaker_pos_y")
+					z = Spring.GetUnitRulesParam(unitID, "cloaker_pos_z")
+				end
+				if (fullView or (GetUnitAllyTeam(unitID) == readAllyTeam)) then
+					DrawGroundCircle(x, y, z, radius, 64)
+				end
+			end
+		end
+	end
+
+	gl.PopMatrix()
+end
+
+
+function gadget:UpdateFIXME() -- testing "cloak_shield" RulesParam
+	for _,unitID in ipairs(Spring.GetSelectedUnits()) do
+		print(unitID, Spring.GetUnitRulesParam(unitID, "cloak_shield"))
+	end
+end
+
+
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+
+local function UnitUpdate(cmd, unitID, radius)
+	if (radius <= 0) then
+		drawUnits[unitID] = nil
+	else
+		drawUnits[unitID] = radius
+	end
+end
+
+function gadget:UnitDestroyed(unitID)
+	UnitUpdate(0, unitID, 0)
+end
+
+function gadget:Taken(unitID)
+	UnitUpdate(0, unitID, 0)
+end
+
+function gadget:Initialize()
+	gadgetHandler:AddSyncAction(SYNCSTR, UnitUpdate)
+	sphereList    = gl.CreateList(DrawSphere, sphereDivs, sphereArcs, false)
+	negSphereList = gl.CreateList(DrawSphere, sphereDivs, sphereArcs, true)
+	setupMatList  = gl.CreateList(SetupMaterial)
+	resetMatList  = gl.CreateList(ResetMaterial)
+	backMatList   = gl.CreateList(BackMaterial)
+	frontMatList  = gl.CreateList(FrontMaterial)
+	atiFixMatList = gl.CreateList(AtiBugFixMaterial)
+	shieldList    = gl.CreateList(ShieldList)
+	miniMapXformList = gl.CreateList(MiniMapXform)
+end
+
+
+function gadget:Shutdown()
+	gl.DeleteList(sphereList)
+	gl.DeleteList(negSphereList)
+	gl.DeleteList(setupMatList)
+	gl.DeleteList(resetMatList)
+	gl.DeleteList(backMatList)
+	gl.DeleteList(frontMatList)
+	gl.DeleteList(shieldList)
+	gl.DeleteList(miniMapXformList)
+end
+
+
+--------------------------------------------------------------------------------
+--  UNSYNCED
+--------------------------------------------------------------------------------
+end
+local glColor = gl.Color
+local glBeginEnd = gl.BeginEnd
+local glPushAttrib = gl.PushAttrib
+local glLineWidth = gl.LineWidth
+local glDepthTest = gl.DepthTest
+local glPopAttrib = gl.PopAttrib
+
+local GL_LINE_BITS = GL.LINE_BITS
+local GL_LINES     = GL.LINES
+
+local abs = math.abs
+
+local spGetMyAllyTeamID    = Spring.GetMyAllyTeamID
+local spGetSpectatingState = Spring.GetSpectatingState
+local spIsUnitInView       = Spring.IsUnitInView
+local spValidUnitID        = Spring.ValidUnitID
+local spGetUnitRulesParam  = Spring.GetUnitRulesParam
+local spGetUnitViewPosition = Spring.GetUnitViewPosition
+local spGetUnitLosState    = Spring.GetUnitLosState
+local spGetGameFrame       = Spring.GetGameFrame
+
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+local shieldUnits = {}
+local shieldCount = 0
+
+function gadget:UnitCreated(unitID, unitDefID)
+	if UnitDefs[unitDefID].shieldWeaponDef then
+		shieldCount = shieldCount + 1
+		shieldUnits[shieldCount] = unitID
+	end
+end
+
+function gadget:UnitDestroyed(unitID, unitDefID)
+	if UnitDefs[unitDefID].shieldWeaponDef then
+		for i=1, #shieldUnits do
+			if shieldUnits[i] == unitID then
+				table.remove(shieldUnits,i)
+				shieldCount = shieldCount - 1
+				break;
+			end
+		end
+	end
+end
+
+function gadget:Initialize()
+
+end
+
+local function DrawFunc()
+	local unitID
+	local connectedToUnitID
+	local x1, y1, z1, x2, y2, z2
+	local spec, fullview = spGetSpectatingState()
+	local myTeam = spGetMyAllyTeamID()
+	for i=1, #shieldUnits do
+		unitID = shieldUnits[i]
+		connectedToUnitID = tonumber(spGetUnitRulesParam(unitID, "shield_link_unit") or -1)
+		if connectedToUnitID and connectedToUnitID >= 0 and (spValidUnitID(unitID) and spValidUnitID(connectedToUnitID)) then
+			local los1 = spGetUnitLosState(unitID, myTeam, false)
+			local los2 = spGetUnitLosState(connectedToUnitID, myTeam, false)
+			if (fullview or (los1 and los1.los) or (los2 and los2.los)) and
+					(spIsUnitInView(unitID) or spIsUnitInView(connectedToUnitID)) then
+				
+				x1, y1, z1 = spGetUnitViewPosition(unitID, true)
+				x2, y2, z2 = spGetUnitViewPosition(connectedToUnitID, true)
+				glVertex(x1, y1, z1)
+				glVertex(x2, y2, z2)
+			end
+		end
+	end
+end
+
+local function DrawWorldFunc()
+	if shieldCount > 1 then
+		local frame = spGetGameFrame()
+		local alpha = 0.5-0.1*abs((frame%10) - 5)
+		
+		glPushAttrib(GL_LINE_BITS)
+    
+		glDepthTest(true)
+		glColor(1,0,1,alpha)
+		glLineWidth(alpha+0.6)
+		glBeginEnd(GL_LINES, DrawFunc)
+    
+		glDepthTest(false)
+		glColor(1,1,1,1)
+    
+		glPopAttrib()
+	end
+end
+
+function gadget:DrawWorld()
+	DrawWorldFunc()
+end
+function gadget:DrawWorldRefraction()
+	DrawWorldFunc()
+end
+
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+end
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
